@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="stylesheet"
+ href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Route Optimizer — Safety, AQI & Efficiency</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E7EBE2; --panel:#F6F8F3; --ink:#1D2A21; --forest:#36483A; --forest-ink:#F6F8F3;
+  --muted:#5D6C60; --line:#CBD3C6; --road:#FFFFFF; --road-edge:#AFB9A9; --river:#A8CAD5;
+  --block:#DCE2D5; --route:#163B2A; --route-halo:#FFFFFF; --fast:#4B3B6B; --warn:#9A5B12;
+  --good:#2F7D46; --bad:#A83A2C; --focus:#2A6FDB;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#141A16; --panel:#1B231E; --ink:#E4EBE3; --forest:#A6C9AD; --forest-ink:#132018;
+    --muted:#97A59A; --line:#2D3A31; --road:#3B483F; --road-edge:#222C25; --river:#1E3944;
+    --block:#19201B; --route:#C3F5D1; --route-halo:#141A16; --fast:#C9B6F0; --warn:#E3A55A;
+    --good:#7FD39A; --bad:#F08A7C; --focus:#7FB0FF; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#141A16; --panel:#1B231E; --ink:#E4EBE3; --forest:#A6C9AD; --forest-ink:#132018;
+  --muted:#97A59A; --line:#2D3A31; --road:#3B483F; --road-edge:#222C25; --river:#1E3944;
+  --block:#19201B; --route:#C3F5D1; --route-halo:#141A16; --fast:#C9B6F0; --warn:#E3A55A;
+  --good:#7FD39A; --bad:#F08A7C; --focus:#7FB0FF; color-scheme: dark;
+}
+:root{box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);}
+html{scroll-padding-top:env(safe-area-inset-top,0px);}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0; background:var(--paper); color:var(--ink); font:15px/1.5 "Public Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; font-variant-numeric:tabular-nums;}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
+
+.wrap{max-width:1380px; margin:0 auto; padding:20px 20px 32px}
+header{display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:12px 24px; margin-bottom:16px}
+h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif; font-weight:400; font-size:clamp(30px,4vw,44px); line-height:1.05; margin:0; letter-spacing:-.01em}
+.sub{margin:6px 0 0; color:var(--muted); max-width:62ch; font-size:14px}
+.toolbar{display:flex; flex-wrap:wrap; gap:8px; align-items:center}
+.btn{border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:7px 12px; cursor:pointer; font-size:13.5px; font-weight:500}
+.btn:hover{border-color:var(--muted)}
+.check{display:inline-flex; gap:6px; align-items:center; font-size:13.5px; color:var(--muted); cursor:pointer; padding:0 4px}
+.check input{accent-color:var(--forest)}
+
+.layout{display:grid; grid-template-columns:minmax(0,1fr) 370px; gap:18px; align-items:start}
+@media (max-width:980px){ .layout{grid-template-columns:1fr} }
+
+.mapcard{background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden}
+.mapscroll{overflow-x:auto}
+svg.map{display:block; width:100%; min-width:720px; height:auto; user-select:none}
+.legend{display:flex; flex-wrap:wrap; gap:6px 18px; padding:12px 16px; border-top:1px solid var(--line); font-size:12.5px; color:var(--muted)}
+.legend span{display:inline-flex; align-items:center; gap:6px}
+.sw{width:12px; height:12px; border-radius:50%; display:inline-block}
+.legend .group{display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center}
+.legend .group b{font-weight:600; color:var(--ink)}
+
+/* SVG */
+.bg-block{fill:var(--block)}
+.river{fill:none; stroke:var(--river); stroke-width:34; stroke-linecap:round}
+.river-label{fill:var(--muted); font:italic 13px "Instrument Serif",Georgia,serif; letter-spacing:.04em}
+.seg{cursor:pointer}
+.seg .casing{stroke:var(--road-edge); stroke-linecap:round}
+.seg .surface{stroke:var(--road); stroke-linecap:round}
+.seg .ov-school{stroke:#E9C331; stroke-dasharray:10 7; stroke-linecap:butt}
+.seg .ov-cons{stroke:#E0761F; stroke-dasharray:6 6; stroke-linecap:butt}
+.seg .ov-pot{stroke:#8B6744; stroke-dasharray:0.1 7; stroke-linecap:round}
+.seg .ov-heavy{stroke:#6F7C88; stroke-dasharray:14 10; stroke-linecap:butt}
+.seg .hit{stroke:transparent; stroke-linecap:round}
+.seg:hover .casing{stroke:var(--muted)}
+.seg.selected .casing{stroke:var(--focus)}
+.road-label{fill:var(--muted); font:600 11.5px "Public Sans",system-ui,sans-serif; pointer-events:none}
+.badge{font-size:14px; pointer-events:none}
+.badge-bg{fill:var(--panel); stroke:var(--line)}
+.node{cursor:pointer}
+.node circle.dot{stroke:var(--panel); stroke-width:3}
+.node.selected circle.dot{stroke:var(--focus); stroke-width:3.5}
+.node .aqi{font:700 11px "Public Sans",system-ui,sans-serif; text-anchor:middle; dominant-baseline:central; pointer-events:none}
+.node .name{fill:var(--ink); font:500 11px "Public Sans",system-ui,sans-serif; text-anchor:middle; pointer-events:none; paint-order:stroke; stroke:var(--panel); stroke-width:3.5px; stroke-linejoin:round}
+.node .end{fill:var(--ink)}
+.node .end-letter{fill:var(--panel); font:400 22px "Instrument Serif",Georgia,serif; text-anchor:middle; dominant-baseline:central; pointer-events:none}
+.node.visited circle.dot{animation:pulse .5s ease-out}
+@keyframes pulse{0%{stroke:var(--route); stroke-width:10} 100%{stroke:var(--panel); stroke-width:3}}
+.route-halo{fill:none; stroke:var(--route-halo); stroke-width:15; stroke-linecap:round; stroke-linejoin:round; opacity:.9}
+.route-line{fill:none; stroke:var(--route); stroke-width:8; stroke-linecap:round; stroke-linejoin:round}
+.fast-line{fill:none; stroke:var(--fast); stroke-width:3.5; stroke-dasharray:2 7; stroke-linecap:round; stroke-linejoin:round}
+.route-group.stale{opacity:.35}
+
+/* Sidebar */
+aside{display:flex; flex-direction:column; gap:14px}
+.panel{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px}
+.panel h2{font-size:15px; font-weight:700; margin:0 0 2px}
+.panel .hint{font-size:13px; color:var(--muted); margin:0 0 12px}
+.editor{border-color:var(--focus)}
+.editor-head{display:flex; justify-content:space-between; align-items:flex-start; gap:8px}
+.x{border:0; background:none; font-size:20px; line-height:1; cursor:pointer; color:var(--muted); padding:2px 6px; border-radius:6px}
+.fields{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+.field label{display:block; font-size:12.5px; color:var(--muted); margin-bottom:3px}
+.field input[type=number]{width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--paper)}
+.field .si{font-size:11.5px; color:var(--muted); margin-top:2px}
+.aqi-read{display:flex; align-items:center; gap:12px; margin:14px 0 2px; padding:10px 12px; border-radius:10px; background:var(--paper)}
+.aqi-read .num{font-family:"Instrument Serif",Georgia,serif; font-size:38px; line-height:1}
+.aqi-read .cat{font-weight:600}
+.aqi-read .dom{font-size:12.5px; color:var(--muted)}
+.full{grid-column:1 / -1}
+.range-row{display:flex; align-items:center; gap:10px}
+.range-row input{flex:1; accent-color:var(--forest)}
+.flags{display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; margin-top:4px}
+.flags label{display:flex; gap:6px; align-items:center; font-size:13.5px; cursor:pointer}
+.flags input{accent-color:var(--forest)}
+.readout{font-size:13px; color:var(--muted); margin-top:10px}
+
+.w-row{display:grid; grid-template-columns:1fr auto; gap:2px 10px; margin-bottom:12px}
+.w-row label{font-weight:600; font-size:14px}
+.w-row .pct{font-size:13px; color:var(--muted); text-align:right}
+.w-row input{grid-column:1 / -1; width:100%; accent-color:var(--forest)}
+.w-row .desc{grid-column:1 / -1; font-size:12px; color:var(--muted); margin-top:-2px}
+.presets{display:flex; flex-wrap:wrap; gap:6px; margin-top:2px}
+.presets .btn{padding:5px 10px; font-size:12.5px}
+.presets .btn[aria-pressed=true]{background:var(--forest); color:var(--forest-ink); border-color:var(--forest)}
+.run{width:100%; border:0; border-radius:10px; padding:13px 16px; background:var(--forest); color:var(--forest-ink); font-weight:700; font-size:16px; cursor:pointer; margin-top:14px}
+.run:hover{filter:brightness(1.08)}
+
+.stale-note{font-size:13px; color:var(--warn); background:color-mix(in srgb,var(--warn) 12%,transparent); border-radius:8px; padding:7px 10px; margin-bottom:10px}
+.route-name{font-family:"Instrument Serif",Georgia,serif; font-size:28px; line-height:1.1; margin:2px 0 8px}
+.path{display:flex; flex-wrap:wrap; gap:4px; align-items:center; font-size:12.5px; margin-bottom:12px}
+.path .chip{background:var(--paper); border:1px solid var(--line); border-radius:999px; padding:2px 8px}
+.path .sep{color:var(--muted)}
+table.cmp{width:100%; border-collapse:collapse; font-size:13.5px}
+table.cmp th,table.cmp td{padding:6px 4px; white-space:nowrap; border-bottom:1px solid var(--line); text-align:right}
+table.cmp th:first-child,table.cmp td:first-child{text-align:left; color:var(--muted); font-weight:500}
+table.cmp thead th{font-size:12px; color:var(--muted); font-weight:600; white-space:normal; vertical-align:bottom}
+table.cmp td.better{color:var(--good); font-weight:700}
+table.cmp td.worse{color:var(--bad)}
+.zones{display:flex; flex-wrap:wrap; gap:6px; margin:12px 0}
+.zones span{font-size:12.5px; background:var(--paper); border-radius:6px; padding:3px 8px}
+.credits{display:flex; gap:12px; align-items:center; border-top:1px solid var(--line); padding-top:12px; margin-top:4px}
+.credits .num{font-family:"Instrument Serif",Georgia,serif; font-size:40px; line-height:1; min-width:56px}
+.credits p{margin:0; font-size:13px; color:var(--muted)}
+details{margin-top:12px; font-size:13px}
+summary{cursor:pointer; font-weight:600}
+table.trace{width:100%; border-collapse:collapse; margin-top:8px; font-size:12.5px}
+table.trace td,table.trace th{padding:4px; border-bottom:1px solid var(--line); text-align:left}
+table.trace th{color:var(--muted); font-weight:600}
+.formula{font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.45}
+.empty{color:var(--muted); font-size:14px; margin:0}
+@media (prefers-reduced-motion: reduce){ .node.visited circle.dot{animation:none} }
+/* Real interactive Surat map */
+#map {
+    width: 100%;
+    height: 610px;
+    min-height: 450px;
+    border-radius: 10px;
+    z-index: 1;
+}
+
+.leaflet-container {
+    font-family: inherit;
+    background: #f2f0e9;
+}
+
+.real-map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 10px;
+    font-size: 12px;
+}
+
+.real-map-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.real-road-popup {
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Real map integration */
+#map { width:100%; height:610px; min-height:450px; border-radius:10px; z-index:1; }
+.leaflet-container { font-family:inherit; background:#f2f0e9; }
+.real-road-popup { font-family:Arial,sans-serif; font-size:13px; line-height:1.6; }
+.route-animated { stroke-dasharray:10 10; animation:route-flow 1.2s linear infinite; }
+@keyframes route-flow { to { stroke-dashoffset:-20; } }
+@media (prefers-reduced-motion:reduce) { .route-animated { animation:none; } }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Route optimization on safety, air quality and efficiency</h1>
+      <p class="sub">Explore the real Surat road network and GPS-matched pollution readings. Select a road to inspect its measured data, adjust the route weights, and compare the pollution-aware route with the fastest route.</p>
+    </div>
+    <div class="toolbar">
+      <label class="check"><input type="checkbox" id="showFast" checked> Show fastest route</label>
+      <button class="btn" id="randomize">Reload road data</button>
+      <button class="btn" id="reset">Reset all</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <section class="mapcard" aria-label="Road network map">
+      <div class="mapscroll">
+        <svg class="map" id="map" viewBox="0 0 1000 610" role="img" aria-label="Road network with six routes and hotspots"></svg>
+      </div>
+      <div class="legend">
+        <div class="group"><b>Sensor coverage</b>
+          <span><i class="sw" style="background:#4b9b75"></i>Measured</span>
+          <span><i class="sw" style="background:#e3a43b"></i>Limited data</span>
+          <span><i class="sw" style="background:#a7a7a7"></i>Unmeasured</span>
+        </div>
+        <div class="group"><b>Routes</b>
+          <span><i class="sw" style="background:#d45b45"></i>Pollution-aware</span>
+          <span><i class="sw" style="background:#397bb5"></i>Fastest</span>
+        </div>
+      </div>
+      <p class="hint" style="padding:0 16px 12px;margin:0">Sensor readings cover only the GPS-tracked journey, not every road in Surat. Pollution colours show a relative score, not official CPCB AQI.</p>
+    </section>
+
+    <aside>
+      <div class="panel editor" id="editor" hidden></div>
+
+      <div class="panel">
+        <h2>Weights</h2>
+        <p class="hint">How much each factor counts in the cost of a road segment. Percentages are normalized to add up to 100.</p>
+        <div id="weights"></div>
+        <div class="presets" id="presets"></div>
+        <button class="run" id="run">Run Dijkstra</button>
+      </div>
+
+      <div class="panel" id="results" aria-live="polite">
+        <h2>Result</h2>
+        <p class="empty">Nothing calculated yet. Run Dijkstra to find the lowest-cost route for the current weights and readings.</p>
+      </div>
+    </aside>
+  </div>
+</div>
+<script>
+// ===== CORE: data + scoring + Dijkstra (no DOM) =====
+const NODES = {
+  SRC:{x:70,y:300,name:'Source',short:'S',poll:{pm25:55,nox:40,co:1.0,sox:15}},
+  DST:{x:930,y:300,name:'Destination',short:'D',poll:{pm25:50,nox:35,co:0.9,sox:12}},
+  '1a':{x:235,y:72,name:'Ring Rd Junction',poll:{pm25:58,nox:52,co:1.2,sox:14}},
+  '1b':{x:500,y:46,name:'Flyover',poll:{pm25:28,nox:18,co:0.5,sox:8}},
+  '1c':{x:765,y:72,name:'Toll Plaza',poll:{pm25:72,nox:85,co:1.9,sox:18}},
+  '2a':{x:255,y:168,name:'Public School',poll:{pm25:68,nox:62,co:1.4,sox:16}},
+  '2b':{x:500,y:152,name:'City Hospital',poll:{pm25:62,nox:48,co:1.1,sox:15}},
+  '2c':{x:745,y:168,name:'College Gate',poll:{pm25:45,nox:32,co:0.8,sox:12}},
+  '3a':{x:275,y:262,name:'GIDC Gate',poll:{pm25:110,nox:140,co:3.5,sox:90}},
+  '3b':{x:500,y:250,name:'Chemical Zone',poll:{pm25:145,nox:190,co:4.8,sox:140}},
+  '3c':{x:725,y:262,name:'Truck Terminal',poll:{pm25:120,nox:160,co:4.0,sox:110}},
+  '4a':{x:275,y:342,name:'Old Market',poll:{pm25:75,nox:70,co:1.8,sox:25}},
+  '4b':{x:500,y:354,name:'Clock Tower',poll:{pm25:85,nox:85,co:2.2,sox:30}},
+  '4c':{x:725,y:342,name:'Bus Depot',poll:{pm25:70,nox:65,co:1.6,sox:22}},
+  '5a':{x:255,y:436,name:'Metro Site North',poll:{pm25:90,nox:60,co:1.5,sox:20}},
+  '5b':{x:500,y:450,name:'Excavation Pit',poll:{pm25:180,nox:75,co:1.9,sox:24}},
+  '5c':{x:745,y:436,name:'Diversion Point',poll:{pm25:95,nox:62,co:1.6,sox:20}},
+  '6a':{x:235,y:528,name:'Riverfront Walk',poll:{pm25:26,nox:22,co:0.5,sox:8}},
+  '6b':{x:500,y:552,name:'Riverside Garden',poll:{pm25:18,nox:14,co:0.4,sox:6}},
+  '6c':{x:765,y:528,name:'Boat Club',poll:{pm25:24,nox:20,co:0.5,sox:8}},
+};
+const ROADS = {
+  R1:{name:'Ring Road',note:'Long but fast and clean'},
+  R2:{name:'School Road',note:'School and hospital zones'},
+  R3:{name:'Industrial Highway',note:'Shortest, heavy trucks, polluted'},
+  R4:{name:'Old City Road',note:'Potholes and stop-go signals'},
+  R5:{name:'Metro Works Road',note:'Construction zone, dust'},
+  R6:{name:'Riverfront Road',note:'Long, clean, park zone'},
+  L:{name:'Link street',note:'Connector between roads'},
+};
+// [from,to,road,len km,speed km/h,traffic x,potholes 0-1,signals,{flags}]
+const EDGE_ROWS = [
+  ['SRC','1a','R1',2.8,55,1.2,0.10,1,{}],
+  ['1a','1b','R1',2.2,65,1.0,0.05,0,{}],
+  ['1b','1c','R1',2.2,65,1.3,0.05,0,{}],
+  ['1c','DST','R1',2.8,55,1.3,0.10,1,{}],
+  ['SRC','2a','R2',1.6,50,1.0,0.2,1,{}],
+  ['2a','2b','R2',1.2,50,1.05,0.2,1,{school:true}],
+  ['2b','2c','R2',1.2,50,1.05,0.15,1,{sensitive:true}],
+  ['2c','DST','R2',1.6,50,1.0,0.2,1,{}],
+  ['SRC','3a','R3',1.4,55,1.2,0.35,0,{heavy:true}],
+  ['3a','3b','R3',1.3,55,1.25,0.5,0,{heavy:true}],
+  ['3b','3c','R3',1.3,55,1.25,0.5,0,{heavy:true}],
+  ['3c','DST','R3',1.4,55,1.2,0.35,0,{}],
+  ['SRC','4a','R4',1.5,40,1.3,0.6,2,{}],
+  ['4a','4b','R4',1.4,35,1.45,0.85,3,{}],
+  ['4b','4c','R4',1.4,35,1.45,0.8,2,{}],
+  ['4c','DST','R4',1.5,40,1.3,0.55,2,{}],
+  ['SRC','5a','R5',1.6,45,1.1,0.2,1,{}],
+  ['5a','5b','R5',1.6,45,1.3,0.6,0,{construction:true}],
+  ['5b','5c','R5',1.6,45,1.3,0.5,0,{construction:true}],
+  ['5c','DST','R5',1.6,45,1.1,0.25,1,{}],
+  ['SRC','6a','R6',2.4,55,1.0,0.2,1,{}],
+  ['6a','6b','R6',1.9,50,1.0,0.2,0,{sensitive:true}],
+  ['6b','6c','R6',1.9,55,1.0,0.15,0,{}],
+  ['6c','DST','R6',2.4,55,1.0,0.2,1,{}],
+  ['1a','2a','L',1.0,30,1.1,0.3,0,{}],
+  ['1c','2c','L',1.0,30,1.1,0.3,0,{}],
+  ['2b','3b','L',0.9,30,1.2,0.35,1,{}],
+  ['3a','4a','L',0.8,30,1.2,0.4,0,{}],
+  ['3c','4c','L',0.8,30,1.2,0.4,0,{}],
+  ['4b','5b','L',0.9,30,1.3,0.5,1,{}],
+  ['5a','6a','L',1.0,30,1.1,0.3,0,{}],
+  ['5c','6c','L',1.0,30,1.1,0.3,0,{}],
+];
+function makeEdges(){
+  return EDGE_ROWS.map((r,i)=>({id:'e'+i,a:r[0],b:r[1],road:r[2],len:r[3],speed:r[4],traffic:r[5],potholes:r[6],signals:r[7],
+    school:!!r[8].school,sensitive:!!r[8].sensitive,construction:!!r[8].construction,heavy:!!r[8].heavy}));
+}
+// CPCB National AQI breakpoints
+const BP = {
+  pm25:[[0,30,0,50],[31,60,51,100],[61,90,101,200],[91,120,201,300],[121,250,301,400],[251,500,401,500]],
+  nox:[[0,40,0,50],[41,80,51,100],[81,180,101,200],[181,280,201,300],[281,400,301,400],[401,800,401,500]],
+  sox:[[0,40,0,50],[41,80,51,100],[81,380,101,200],[381,800,201,300],[801,1600,301,400],[1601,2400,401,500]],
+  co:[[0,1,0,50],[1.1,2,51,100],[2.1,10,101,200],[10.1,17,201,300],[17.1,34,301,400],[34.1,50,401,500]],
+};
+function subIndex(p,c){
+  c=Math.max(0,+c||0); const t=BP[p];
+  for(let i=0;i<t.length;i++){const [bl,bh,il,ih]=t[i]; const nextLo = i+1<t.length?t[i+1][0]:Infinity;
+    if(c<nextLo){ const cc=Math.min(Math.max(c,bl),bh); return il+(ih-il)*(cc-bl)/(bh-bl); }}
+  return 500;
+}
+function nodeAQI(n){
+  const s={pm25:subIndex('pm25',n.poll.pm25),nox:subIndex('nox',n.poll.nox),co:subIndex('co',n.poll.co),sox:subIndex('sox',n.poll.sox)};
+  let dom='pm25'; for(const k in s) if(s[k]>s[dom]) dom=k;
+  return {aqi:Math.round(Math.min(500,s[dom])),dom,s};
+}
+const AQI_CATS=[[50,'Good','#3c9a54'],[100,'Satisfactory','#9cc23f'],[200,'Moderate','#e9c331'],[300,'Poor','#e8862e'],[400,'Very poor','#d23b2f'],[1e9,'Severe','#8a1c2b']];
+function aqiCat(a){for(const c of AQI_CATS) if(a<=c[0]) return {label:c[1],color:c[2]};}
+const CAPS={school:25,sensitive:30,construction:20};
+function edgeMetrics(e,nodes){
+  let sp=e.speed; if(e.school) sp=Math.min(sp,CAPS.school); if(e.sensitive) sp=Math.min(sp,CAPS.sensitive); if(e.construction) sp=Math.min(sp,CAPS.construction);
+  const time=e.len/sp*60*e.traffic;
+  const aqi=(nodeAQI(nodes[e.a]).aqi+nodeAQI(nodes[e.b]).aqi)/2;
+  const exposure=aqi/100*time;
+  const risk=(0.1+(e.school?0.6:0)+(e.sensitive?0.35:0)+(e.construction?0.5:0)+(e.heavy?0.4:0)+0.3*e.potholes)*e.len;
+  const mech=e.len*(0.1+0.9*e.potholes)+0.3*e.signals+0.6*(e.traffic-1)*e.len+(e.construction?0.3*e.len:0);
+  return {time,aqi,exposure,risk,mech,effSpeed:sp};
+}
+function dijkstra(nodes,edges,costFn,src,dst){
+  const adj={}; for(const id in nodes) adj[id]=[];
+  for(const e of edges){adj[e.a].push([e.b,e]); adj[e.b].push([e.a,e]);}
+  const dist={},prev={},done=new Set(); for(const id in nodes) dist[id]=Infinity; dist[src]=0;
+  const trace=[];
+  while(true){
+    let u=null,best=Infinity; for(const id in nodes) if(!done.has(id)&&dist[id]<best){best=dist[id];u=id;}
+    if(u===null) break; done.add(u); trace.push({node:u,cost:dist[u],via:prev[u]?prev[u].from:null});
+    if(u===dst) break;
+    for(const [v,e] of adj[u]){ if(done.has(v)) continue; const nd=dist[u]+costFn(e); if(nd<dist[v]-1e-12){dist[v]=nd; prev[v]={from:u,edge:e};}}
+  }
+  const path=[],pathEdges=[]; let c=dst; if(dist[dst]===Infinity) return null;
+  while(c){path.unshift(c); if(prev[c]){pathEdges.unshift(prev[c].edge); c=prev[c].from;} else c=null;}
+  return {path,pathEdges,cost:dist[dst],trace};
+}
+function solve(nodes,edges,w){
+  const M={}; for(const e of edges) M[e.id]=edgeMetrics(e,nodes);
+  const mx={time:0,exposure:0,risk:0,mech:0}; for(const id in M) for(const k in mx) mx[k]=Math.max(mx[k],M[id][k]);
+  const tot=w.eff+w.air+w.safe+w.mech||1; const W={eff:w.eff/tot,air:w.air/tot,safe:w.safe/tot,mech:w.mech/tot};
+  const cost=e=>{const m=M[e.id]; return W.eff*m.time/mx.time+W.air*m.exposure/mx.exposure+W.safe*m.risk/mx.risk+W.mech*m.mech/mx.mech;};
+  const best=dijkstra(nodes,edges,cost,'SRC','DST');
+  const fast=dijkstra(nodes,edges,e=>M[e.id].time,'SRC','DST');
+  const sum=r=>{const s={len:0,time:0,exposure:0,risk:0,mech:0,flags:new Set(),roads:[]};
+    for(const e of r.pathEdges){const m=M[e.id]; s.len+=e.len; s.time+=m.time; s.exposure+=m.exposure; s.risk+=m.risk; s.mech+=m.mech;
+      if(e.school)s.flags.add('school'); if(e.sensitive)s.flags.add('sensitive'); if(e.construction)s.flags.add('construction'); if(e.heavy)s.flags.add('heavy'); if(e.potholes>=0.5)s.flags.add('potholes');
+      if(!s.roads.includes(e.road)) s.roads.push(e.road);}
+    s.avgAQI=s.exposure*100/s.time; return s;};
+  return {best,fast,bestS:sum(best),fastS:sum(fast),W,M,mx,cost};
+}
+function credits(r){
+  const same=r.best.path.join()==r.fast.path.join();
+  if(same) return {credits:0,same:true};
+  const b=r.bestS,f=r.fastS;
+  const airGain=Math.max(0,1-b.exposure/f.exposure), safeGain=Math.max(0,1-b.risk/f.risk);
+  const extra=Math.max(0,b.time-f.time); const reasonable=extra<=0.6*f.time;
+  const c=Math.round((100*(0.5*airGain+0.5*safeGain))*(reasonable?1:0.5)+Math.min(extra,10));
+  return {credits:c,airGain,safeGain,extra,reasonable,same:false};
+}
+
+// ===== UI =====
+const SVGNS='http://www.w3.org/2000/svg';
+const $=s=>document.querySelector(s);
+const clone=o=>JSON.parse(JSON.stringify(o));
+const FLAG_ICON={school:'🏫',sensitive:'🏥',construction:'🚧',heavy:'🚛',potholes:'🕳️'};
+const FLAG_NAME={school:'School zone',sensitive:'Hospital / park zone',construction:'Construction',heavy:'Heavy vehicles',potholes:'Bad potholes'};
+const WEIGHTS=[
+  {k:'eff',label:'Efficiency',desc:'Travel time from distance, speed and traffic'},
+  {k:'air',label:'Air quality',desc:'AQI exposure: segment AQI × time spent on it'},
+  {k:'safe',label:'Safety',desc:'School, hospital, construction, trucks, potholes'},
+  {k:'mech',label:'Road & vehicle',desc:'Surface wear, stop-go signals, braking'},
+];
+const PRESETS=[
+  {id:'balanced',label:'Balanced',w:{eff:40,air:30,safe:20,mech:10}},
+  {id:'fast',label:'Fastest',w:{eff:100,air:0,safe:0,mech:0}},
+  {id:'air',label:'Clean air',w:{eff:20,air:60,safe:10,mech:10}},
+  {id:'safe',label:'Safest',w:{eff:20,air:10,safe:60,mech:10}},
+  {id:'smooth',label:'Smooth ride',w:{eff:25,air:10,safe:15,mech:50}},
+];
+const POLL_FIELDS=[
+  {k:'pm25',label:'PM2.5',unit:'µg/m³',step:1},
+  {k:'nox',label:'NOx (as NO₂)',unit:'µg/m³',step:1},
+  {k:'co',label:'CO',unit:'mg/m³',step:0.1},
+  {k:'sox',label:'SOx (as SO₂)',unit:'µg/m³',step:1},
+];
+const STORE='route-opt-v1';
+let state=load()||fresh();
+function fresh(){return {nodes:clone(NODES),edges:makeEdges(),w:clone(PRESETS[0].w)};}
+function load(){try{const s=JSON.parse(localStorage.getItem(STORE)); if(s&&s.nodes&&s.edges&&s.w) return s;}catch(e){} return null;}
+function save(){try{localStorage.setItem(STORE,JSON.stringify(state));}catch(e){}}
+let sel=null, result=null, stale=false, animTimers=[];
+const reduceMotion=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function el(tag,attrs,parent){const e=document.createElementNS(SVGNS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); if(parent) parent.appendChild(e); return e;}
+
+// ---------- map ----------
+const svg=$('#map');
+let gRoads,gRoute,gBadges,gNodes;
+function buildMap(){
+  svg.innerHTML='';
+  const bg=el('g',{},svg);
+  // city blocks for texture
+  const blocks=[[120,110,70,40],[350,95,90,34],[600,98,80,38],[860,120,70,50],[370,200,80,30],[610,200,70,30],[110,380,60,60],[370,392,90,32],[610,392,80,32],[870,380,70,60],[380,290,70,30],[600,295,70,30],[130,200,55,50],[860,210,60,50],[360,480,80,40],[620,480,70,40]];
+  blocks.forEach(b=>el('rect',{x:b[0],y:b[1],width:b[2],height:b[3],rx:4,class:'bg-block'},bg));
+  el('path',{d:'M-20 598 C 200 575, 360 612, 520 596 S 820 576, 1020 600',class:'river'},bg);
+  const rl=el('text',{x:880,y:596,class:'river-label'},bg); rl.textContent='Tapi river';
+  gRoads=el('g',{},svg); gRoute=el('g',{class:'route-group'},svg); gBadges=el('g',{},svg); gNodes=el('g',{},svg);
+  renderRoads(); renderNodes();
+  if(result) drawRoute(false);
+}
+function renderRoads(){
+  gRoads.innerHTML=''; gBadges.innerHTML='';
+  const N=state.nodes;
+  for(const e of state.edges){
+    const A=N[e.a],B=N[e.b], link=e.road==='L';
+    const g=el('g',{class:'seg'+(sel&&sel.type==='edge'&&sel.id===e.id?' selected':''),tabindex:0,role:'button','aria-label':`${ROADS[e.road].name}, ${N[e.a].name} to ${N[e.b].name}`},gRoads);
+    const line=(cls,w)=>el('line',{x1:A.x,y1:A.y,x2:B.x,y2:B.y,class:cls,'stroke-width':w},g);
+    const w=link?7:12;
+    line('casing',w+4); line('surface',w);
+    if(e.potholes>=0.5) line('ov-pot',link?3.5:5);
+    if(e.heavy) line('ov-heavy',2.5);
+    if(e.school) line('ov-school',link?3:5);
+    if(e.construction) line('ov-cons',link?3:5);
+    line('hit',24);
+    const m=edgeMetrics(e,N);
+    const t=el('title',{},g); t.textContent=`${ROADS[e.road].name}: ${N[e.a].name} → ${N[e.b].name}\n${e.len} km, ~${m.time.toFixed(1)} min`;
+    g.addEventListener('click',()=>select('edge',e.id));
+    g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();select('edge',e.id);}});
+    // badges
+    const flags=['school','sensitive','construction','heavy'].filter(f=>e[f]); if(e.potholes>=0.5) flags.push('potholes');
+    if(flags.length){
+      const mx=(A.x+B.x)/2,my=(A.y+B.y)/2, dx=B.x-A.x,dy=B.y-A.y,L=Math.hypot(dx,dy);
+      let px=-dy/L,py=dx/L; if(py>0){px=-px;py=-py;} // offset toward the top
+      if(Math.abs(dx)<Math.abs(dy)){px=1;py=0;}     // links: offset to the right
+      const off=link?16:19, cx=mx+px*off, cy=my+py*off, step=20, start=cx-(flags.length-1)*step/2;
+      flags.forEach((f,i)=>{
+        el('circle',{cx:start+i*step,cy,r:10,class:'badge-bg'},gBadges);
+        const tx=el('text',{x:start+i*step,y:cy+1,class:'badge','text-anchor':'middle','dominant-baseline':'central'},gBadges); tx.textContent=FLAG_ICON[f];
+      });
+    }
+  }
+  // road name labels: along the middle-left segment, below the line
+  for(const r of ['R1','R2','R3','R4','R5','R6']){
+    const e=state.edges.find(x=>x.road===r&&/a$/.test(x.a)&&/b$/.test(x.b)); if(!e) continue;
+    const A=N[e.a],B=N[e.b], x=A.x+(B.x-A.x)*0.5, y=A.y+(B.y-A.y)*0.5;
+    const ang=Math.atan2(B.y-A.y,B.x-A.x)*180/Math.PI;
+    const g=el('g',{transform:`translate(${x},${y}) rotate(${ang})`},gBadges);
+    const tx=el('text',{x:0,y:22,'text-anchor':'middle',class:'road-label'},g); tx.textContent=ROADS[r].name;
+  }
+}
+function renderNodes(){
+  gNodes.innerHTML='';
+  for(const id in state.nodes){
+    const n=state.nodes[id], q=nodeAQI(n), cat=aqiCat(q.aqi), end=id==='SRC'||id==='DST';
+    const g=el('g',{class:'node'+(sel&&sel.type==='node'&&sel.id===id?' selected':''),'data-id':id,tabindex:0,role:'button','aria-label':`${n.name}, AQI ${q.aqi} ${cat.label}`},gNodes);
+    if(end){
+      el('circle',{cx:n.x,cy:n.y,r:24,fill:cat.color,class:'dot'},g);
+      el('circle',{cx:n.x,cy:n.y,r:18,class:'end'},g);
+      const t=el('text',{x:n.x,y:n.y+1,class:'end-letter'},g); t.textContent=id==='SRC'?'S':'D';
+      const nm=el('text',{x:n.x,y:n.y+42,class:'name'},g); nm.textContent=`${n.name}, AQI ${q.aqi}`;
+    }else{
+      el('circle',{cx:n.x,cy:n.y,r:16,fill:cat.color,class:'dot'},g);
+      const t=el('text',{x:n.x,y:n.y+0.5,class:'aqi',fill:(q.aqi>50&&q.aqi<=200)?'#1D2A21':'#FFFFFF'},g); t.textContent=q.aqi;
+      const nm=el('text',{x:n.x,y:n.y+31,class:'name'},g); nm.textContent=n.name;
+    }
+    const tt=el('title',{},g); tt.textContent=`${n.name}: AQI ${q.aqi} (${cat.label}), click to edit readings`;
+    g.addEventListener('click',()=>select('node',id));
+    g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();select('node',id);}});
+  }
+}
+function pathD(pathIds){return pathIds.map((id,i)=>(i?'L':'M')+state.nodes[id].x+' '+state.nodes[id].y).join(' ');}
+function drawRoute(animate){
+  animTimers.forEach(clearTimeout); animTimers=[];
+  gRoute.innerHTML=''; gRoute.classList.toggle('stale',stale);
+  if(!result) return;
+  if($('#showFast').checked && result.fast.path.join()!==result.best.path.join()){
+    el('path',{d:pathD(result.fast.path),class:'fast-line'},gRoute);
+  }
+  const d=pathD(result.best.path);
+  const halo=el('path',{d,class:'route-halo'},gRoute);
+  const line=el('path',{d,class:'route-line'},gRoute);
+  if(animate&&!reduceMotion){
+    const order=result.best.trace.map(t=>t.node), gap=Math.min(90,1100/order.length);
+    order.forEach((id,i)=>animTimers.push(setTimeout(()=>{
+      const g=gNodes.querySelector(`[data-id="${id}"]`); if(g){g.classList.remove('visited'); void g.getBBox(); g.classList.add('visited');}
+    },i*gap)));
+    const L=line.getTotalLength();
+    [halo,line].forEach(p=>{p.style.strokeDasharray=L; p.style.strokeDashoffset=L;});
+    const startAt=order.length*gap;
+    animTimers.push(setTimeout(()=>{[halo,line].forEach(p=>{p.style.transition='stroke-dashoffset 900ms ease-in-out'; p.style.strokeDashoffset=0;});},startAt));
+    animTimers.push(setTimeout(()=>{[halo,line].forEach(p=>{p.style.transition='';p.style.strokeDasharray='';p.style.strokeDashoffset='';});},startAt+1000));
+  }
+}
+
+// ---------- selection / editors ----------
+function select(type,id){ sel={type,id}; renderRoads(); renderNodes(); renderEditor();
+  if(window.innerWidth<=980) $('#editor').scrollIntoView({behavior:reduceMotion?'auto':'smooth',block:'start'}); }
+function clearSel(){ sel=null; renderRoads(); renderNodes(); renderEditor(); }
+function markStale(){ if(result&&!stale){stale=true; drawRoute(false); renderResults();} save(); }
+const fmt=(v,d=1)=>(+v).toFixed(d);
+function renderEditor(){
+  const box=$('#editor');
+  if(!sel){box.hidden=true; box.innerHTML=''; return;}
+  box.hidden=false;
+  if(sel.type==='node'){
+    const n=state.nodes[sel.id];
+    box.innerHTML=`<div class="editor-head"><div><h2>${n.name}</h2><p class="hint">Hotspot readings. AQI uses CPCB National AQI breakpoints; the highest sub-index wins.</p></div><button class="x" aria-label="Close editor">×</button></div>
+      <div class="fields">${POLL_FIELDS.map(f=>`<div class="field"><label for="p-${f.k}">${f.label} <span>(${f.unit})</span></label><input type="number" min="0" step="${f.step}" id="p-${f.k}" data-k="${f.k}" value="${n.poll[f.k]}"><div class="si" id="si-${f.k}"></div></div>`).join('')}</div>
+      <div class="aqi-read" id="aqiRead"></div>`;
+    box.querySelectorAll('input').forEach(inp=>inp.addEventListener('input',()=>{
+      const v=parseFloat(inp.value); n.poll[inp.dataset.k]=isNaN(v)||v<0?0:v; updateAqiRead(); renderNodes(); markStale();
+    }));
+    updateAqiRead();
+  }else{
+    const e=state.edges.find(x=>x.id===sel.id), N=state.nodes;
+    box.innerHTML=`<div class="editor-head"><div><h2>${ROADS[e.road].name}</h2><p class="hint">${N[e.a].name} to ${N[e.b].name}. ${ROADS[e.road].note}.</p></div><button class="x" aria-label="Close editor">×</button></div>
+      <div class="fields">
+        <div class="field"><label for="r-len">Length (km)</label><input type="number" id="r-len" data-k="len" min="0.1" step="0.1" value="${e.len}"></div>
+        <div class="field"><label for="r-speed">Normal speed (km/h)</label><input type="number" id="r-speed" data-k="speed" min="5" step="5" value="${e.speed}"></div>
+        <div class="field"><label for="r-traffic">Traffic delay (×)</label><input type="number" id="r-traffic" data-k="traffic" min="1" step="0.05" value="${e.traffic}"></div>
+        <div class="field"><label for="r-signals">Signals / stops</label><input type="number" id="r-signals" data-k="signals" min="0" step="1" value="${e.signals}"></div>
+        <div class="field full"><label for="r-pot">Potholes and surface damage</label><div class="range-row"><input type="range" id="r-pot" data-k="potholes" min="0" max="1" step="0.05" value="${e.potholes}"><span id="potv">${Math.round(e.potholes*100)}%</span></div></div>
+        <div class="field full"><label>Zones on this segment</label><div class="flags">
+          ${['school','sensitive','construction','heavy'].map(f=>`<label><input type="checkbox" data-f="${f}" ${e[f]?'checked':''}> ${FLAG_ICON[f]} ${FLAG_NAME[f]}</label>`).join('')}
+        </div></div>
+      </div><div class="readout" id="segRead"></div>`;
+    box.querySelectorAll('input[data-k]').forEach(inp=>inp.addEventListener('input',()=>{
+      const v=parseFloat(inp.value); if(isNaN(v)) return;
+      const k=inp.dataset.k; e[k]=k==='traffic'?Math.max(1,v):k==='len'?Math.max(0.1,v):k==='speed'?Math.max(5,v):Math.max(0,v);
+      if(k==='potholes') $('#potv').textContent=Math.round(v*100)+'%';
+      updateSegRead(e); renderRoads(); markStale();
+    }));
+    box.querySelectorAll('input[data-f]').forEach(inp=>inp.addEventListener('change',()=>{e[inp.dataset.f]=inp.checked; updateSegRead(e); renderRoads(); markStale();}));
+    updateSegRead(e);
+  }
+  box.querySelector('.x').addEventListener('click',clearSel);
+}
+function updateAqiRead(){
+  const n=state.nodes[sel.id], q=nodeAQI(n), c=aqiCat(q.aqi);
+  POLL_FIELDS.forEach(f=>{const s=$('#si-'+f.k); if(s) s.textContent='Sub-index '+Math.round(q.s[f.k]);});
+  const label={pm25:'PM2.5',nox:'NOx',co:'CO',sox:'SOx'}[q.dom];
+  $('#aqiRead').innerHTML=`<i class="sw" style="background:${c.color};width:18px;height:18px"></i><div class="num">${q.aqi}</div><div><div class="cat">${c.label}</div><div class="dom">Driven by ${label}</div></div>`;
+}
+function updateSegRead(e){
+  const m=edgeMetrics(e,state.nodes);
+  const capped=m.effSpeed<e.speed?` (capped from ${e.speed} by zone limit)`:'';
+  $('#segRead').textContent=`Effective speed ${m.effSpeed} km/h${capped}. Travel time ~${fmt(m.time)} min. Segment AQI ${Math.round(m.aqi)}.`;
+}
+
+// ---------- weights ----------
+function renderWeights(){
+  const tot=WEIGHTS.reduce((s,x)=>s+state.w[x.k],0)||1;
+  $('#weights').innerHTML=WEIGHTS.map(x=>`<div class="w-row"><label for="w-${x.k}">${x.label}</label><span class="pct" id="pct-${x.k}">${Math.round(state.w[x.k]/tot*100)}%</span><input type="range" id="w-${x.k}" data-k="${x.k}" min="0" max="100" step="1" value="${state.w[x.k]}" aria-describedby="d-${x.k}"><span class="desc" id="d-${x.k}">${x.desc}</span></div>`).join('');
+  $('#weights').querySelectorAll('input').forEach(inp=>inp.addEventListener('input',()=>{state.w[inp.dataset.k]=+inp.value; updatePct(); markStale();}));
+  $('#presets').innerHTML=PRESETS.map(p=>`<button class="btn" data-p="${p.id}" aria-pressed="false">${p.label}</button>`).join('');
+  $('#presets').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    state.w=clone(PRESETS.find(p=>p.id===b.dataset.p).w);
+    WEIGHTS.forEach(x=>$('#w-'+x.k).value=state.w[x.k]); updatePct(); markStale();
+  }));
+  updatePct();
+}
+function updatePct(){
+  const tot=WEIGHTS.reduce((s,x)=>s+state.w[x.k],0);
+  WEIGHTS.forEach(x=>$('#pct-'+x.k).textContent=tot?Math.round(state.w[x.k]/tot*100)+'%':'0%');
+  $('#presets').querySelectorAll('button').forEach(b=>{const p=PRESETS.find(q=>q.id===b.dataset.p).w; b.setAttribute('aria-pressed',WEIGHTS.every(x=>p[x.k]===state.w[x.k]));});
+}
+
+// ---------- run ----------
+function run(){
+  const tot=WEIGHTS.reduce((s,x)=>s+state.w[x.k],0);
+  if(!tot){ $('#results').innerHTML='<h2>Result</h2><p class="empty">All weights are zero. Raise at least one weight, then run again.</p>'; return; }
+  result=solve(state.nodes,state.edges,state.w); stale=false;
+  drawRoute(true); renderResults(); save();
+}
+function routeTitle(r){
+  const roads=r.roads.filter(x=>x!=='L').map(x=>ROADS[x].name);
+  const uniq=[...new Set(roads)];
+  if(uniq.length===1) return uniq[0];
+  return uniq.join(' + ')+(r.roads.includes('L')?' via link street':'');
+}
+function renderResults(){
+  const box=$('#results'); if(!result) return;
+  const r=result, b=r.bestS, f=r.fastS, same=r.best.path.join()===r.fast.path.join(), cr=credits(r);
+  const fastCost=r.fast.pathEdges.reduce((s,e)=>s+r.cost(e),0);
+  const N=state.nodes;
+  const rows=[
+    ['Distance',b.len,f.len,'km',1,'low'],
+    ['Travel time',b.time,f.time,'min',1,'low'],
+    ['Average AQI',b.avgAQI,f.avgAQI,'',0,'low'],
+    ['Safety risk',b.risk,f.risk,'',2,'low'],
+    ['Road wear',b.mech,f.mech,'',2,'low'],
+    ['Weighted cost',r.best.cost,fastCost,'',3,'low'],
+  ];
+  const cls=(a,o)=>same||Math.abs(a-o)<1e-9?'':(a<o?'better':'worse');
+  box.innerHTML=`<h2>Result</h2>
+    ${stale?'<div class="stale-note">Inputs changed since this run. Run Dijkstra again to update.</div>':''}
+    <div class="route-name">${routeTitle(b)}</div>
+    <div class="path">${r.best.path.map((id,i)=>`${i?'<span class="sep">›</span>':''}<span class="chip">${N[id].name}</span>`).join('')}</div>
+    <table class="cmp"><thead><tr><th></th><th>Optimal</th><th>${same?'Same as fastest':'Fastest ('+routeTitle(f)+')'}</th></tr></thead><tbody>
+    ${rows.map(x=>`<tr><td>${x[0]}</td><td class="${cls(x[1],x[2])}">${fmt(x[1],x[4])}${x[3]?' '+x[3]:''}</td><td>${fmt(x[2],x[4])}${x[3]?' '+x[3]:''}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="zones">${b.flags.size?[...b.flags].map(z=>`<span>${FLAG_ICON[z]} ${FLAG_NAME[z]}</span>`).join(''):'<span>No school, hospital, construction or truck zones on this route</span>'}</div>
+    <div class="credits"><div class="num">${cr.credits}</div><p>${same
+      ?'Credits. The optimal route is also the fastest, so there is nothing extra to reward and no penalty.'
+      :`Credits for taking this route over the fastest. AQI exposure ${Math.round(cr.airGain*100)}% lower, safety risk ${Math.round(cr.safeGain*100)}% lower, ${fmt(cr.extra)} extra min accepted${cr.reasonable?'':' (more than 60% extra time, so credits are halved)'}.`}</p></div>
+    <details><summary>Dijkstra steps (${r.best.trace.length} nodes settled)</summary>
+      <table class="trace"><thead><tr><th>#</th><th>Settled node</th><th>Cost</th><th>Reached from</th></tr></thead><tbody>
+      ${r.best.trace.map((t,i)=>`<tr><td>${i+1}</td><td>${N[t.node].name}</td><td>${fmt(t.cost,3)}</td><td>${t.via?N[t.via].name:'Start'}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="formula">Edge cost = ${WEIGHTS.map(x=>`${fmt(r.W[x.k],2)} × ${x.label.toLowerCase()}`).join(' + ')}. Each factor is divided by its largest value across all segments so they share a 0 to 1 scale. Efficiency is minutes; air quality is segment AQI ÷ 100 × minutes; safety and road wear are per-km scores × length.</p>
+    </details>`;
+}
+
+// ---------- wiring ----------
+$('#run').addEventListener('click',run);
+$('#showFast').addEventListener('change',()=>drawRoute(false));
+$('#reset').addEventListener('click',()=>{ state=fresh(); sel=null; result=null; stale=false; save(); renderWeights(); buildMap(); renderEditor();
+  $('#results').innerHTML='<h2>Result</h2><p class="empty">Nothing calculated yet. Run Dijkstra to find the lowest-cost route for the current weights and readings.</p>'; });
+$('#randomize').addEventListener('click',()=>{
+  const rnd=(a,b,d=0)=>+(a+Math.random()*(b-a)).toFixed(d);
+  for(const id in state.nodes){ state.nodes[id].poll={pm25:rnd(12,190),nox:rnd(10,220),co:rnd(0.3,5,1),sox:rnd(5,150)}; }
+  renderNodes(); renderRoads(); if(sel) renderEditor(); markStale();
+});
+document.addEventListener('keydown',ev=>{ if(ev.key==='Escape'&&sel) clearSel(); });
+renderWeights(); buildMap();
+</script>
+<script>
+// ===== REAL SURAT MAP + FASTAPI INTEGRATION =====
+(() => {
+  const API = "http://127.0.0.1:8000";
+  const SVNIT = { lat: 21.1654602, lon: 72.7854551 };
+  const STATION = { lat: 21.205538, lon: 72.840954 };
+
+  let map, roadsLayer, optimizedLayer, fastestLayer, startMarker, endMarker;
+  let latestRoute = null;
+  const $ = (selector) => document.querySelector(selector);
+
+  // Replace the demo SVG with a real Leaflet map container.
+  const oldMap = document.getElementById("map");
+  const mapDiv = document.createElement("div");
+  mapDiv.id = "map";
+  mapDiv.setAttribute("role", "application");
+  mapDiv.setAttribute("aria-label", "Real Surat road network and route map");
+  oldMap.replaceWith(mapDiv);
+
+  const editor = $("#editor");
+  editor.hidden = false;
+  editor.innerHTML = `
+    <h2>Real road information</h2>
+    <p class="hint">Click any road on the map to inspect its OpenStreetMap attributes and available sensor readings.</p>
+    <p class="empty">No road selected yet.</p>`;
+
+  // Make clear which controls currently use measured data and which are placeholders.
+  const weightHint = $("#weights").parentElement.querySelector(".hint");
+  if (weightHint) {
+    weightHint.textContent = "Weights are normalized to 100%. Efficiency uses road-speed estimates; air quality uses matched PM2.5 data. Safety and smoothness are neutral placeholders until reliable road-condition data is available.";
+  }
+
+  function roadColor(p) {
+    const status = p.measurement_status || "unmeasured";
+    const score = Number(p.pollution_score);
+    if (status === "unmeasured") return "#a7a7a7";
+    if (status === "limited") return "#e3a43b";
+    if (!Number.isFinite(score)) return "#559b83";
+    if (score < 25) return "#4b9b75";
+    if (score < 50) return "#d0b84b";
+    if (score < 75) return "#e58b42";
+    return "#c94d48";
+  }
+
+  function safeNumber(value, digits=2) {
+    const n = Number(value);
+    return value == null || value === "" || !Number.isFinite(n) ? "No data" : n.toFixed(digits);
+  }
+
+  function roadDetails(p) {
+    const pm25 = safeNumber(p.PM2_5_median);
+    const pm10 = safeNumber(p.PM10_median);
+    const score = safeNumber(p.pollution_score, 1);
+    return `
+      <h2>${p.name || "Unnamed road"}</h2>
+      <p class="hint">${p.highway || "Road type unavailable"} · ${p.measurement_status || "unmeasured"} sensor coverage</p>
+      <div class="fields">
+        <div><label>PM2.5 median</label><strong>${pm25}${pm25 === "No data" ? "" : " µg/m³"}</strong></div>
+        <div><label>PM10 median</label><strong>${pm10}${pm10 === "No data" ? "" : " µg/m³"}</strong></div>
+        <div><label>Unique sensor locations</label><strong>${p.unique_locations ?? 0}</strong></div>
+        <div><label>Relative pollution score</label><strong>${score}${score === "No data" ? "" : "/100"}</strong></div>
+        <div><label>Speed limit / estimate</label><strong>${p.speed_kmh ?? "Not available"} km/h</strong></div>
+        <div><label>Surface</label><strong>${p.surface || "Not tagged"}</strong></div>
+      </div>
+      <p class="formula">The relative pollution score is not an official CPCB AQI. Roads with limited or no sensor coverage should not be interpreted as clean.</p>`;
+  }
+
+  async function loadRoads() {
+    try {
+      const response = await fetch(`${API}/api/roads`);
+      if (!response.ok) throw new Error(`Road endpoint returned HTTP ${response.status}`);
+      const geojson = await response.json();
+      if (roadsLayer) map.removeLayer(roadsLayer);
+      roadsLayer = L.geoJSON(geojson, {
+        style: feature => ({ color: roadColor(feature.properties || {}), weight: 2.2, opacity: 0.78 }),
+        onEachFeature: (feature, layer) => {
+          const p = feature.properties || {};
+          layer.bindPopup(`<div class="real-road-popup">${roadDetails(p)}</div>`);
+          layer.on("click", () => { editor.innerHTML = roadDetails(p); });
+        }
+      }).addTo(map);
+      console.info("Loaded real Surat road GeoJSON", geojson.features?.length ?? "features");
+    } catch (error) {
+      console.error(error);
+      editor.innerHTML = `<h2>Could not load roads</h2><p class="empty">${error.message}. Check that the FastAPI backend is running at ${API}.</p>`;
+    }
+  }
+
+  function currentWeights() {
+    const keys = ["eff", "air", "safe", "mech"];
+    const values = keys.map(key => Number(document.getElementById(`w-${key}`)?.value ?? 0));
+    const total = values.reduce((a,b) => a+b, 0);
+    if (!total) throw new Error("All weights are zero. Increase at least one weight.");
+    return values.map(v => v / total);
+  }
+
+  function clearRouteLayers() {
+    if (optimizedLayer) map.removeLayer(optimizedLayer);
+    if (fastestLayer) map.removeLayer(fastestLayer);
+    optimizedLayer = fastestLayer = null;
+  }
+
+  function routeLatLng(route) {
+    return (route || []).map(point => [point.lat, point.lon]);
+  }
+
+  function drawRoutes(data) {
+    clearRouteLayers();
+    if (data.route?.length) {
+      optimizedLayer = L.polyline(routeLatLng(data.route), {
+        color: "#d45b45", weight: 6, opacity: 0.96, className: "route-animated"
+      }).addTo(map).bindPopup("Pollution-aware optimized route");
+    }
+    if ($("#showFast").checked && data.fastest_route?.length) {
+      fastestLayer = L.polyline(routeLatLng(data.fastest_route), {
+        color: "#397bb5", weight: 4, opacity: 0.9, dashArray: "8 8"
+      }).addTo(map).bindPopup("Fastest route (estimated road speeds)");
+    }
+    const visible = [startMarker, endMarker];
+    if (optimizedLayer) visible.push(optimizedLayer);
+    if (fastestLayer) visible.push(fastestLayer);
+    map.fitBounds(L.featureGroup(visible).getBounds(), { padding: [30, 30] });
+  }
+
+  function renderStats(data) {
+    const a = data.statistics || {};
+    const f = data.fastest_statistics || {};
+    const fmt = (v, d=2) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "—";
+    $("#results").innerHTML = `
+      <h2>Route comparison</h2>
+      <p class="hint">Calculated on the real Surat road graph.</p>
+      <h3>Pollution-aware optimized route</h3>
+      <table class="cmp"><tbody>
+        <tr><td>Distance</td><td>${fmt(a.distance_km)} km</td></tr>
+        <tr><td>Estimated travel time</td><td>${fmt(a.estimated_time_min)} min</td></tr>
+        <tr><td>Road segments</td><td>${a.road_edges ?? "—"}</td></tr>
+        <tr><td>Fully measured segments</td><td>${a.measured_edges ?? "—"}</td></tr>
+        <tr><td>Limited-coverage segments</td><td>${a.limited_edges ?? "—"}</td></tr>
+        <tr><td>Unmeasured segments</td><td>${a.unmeasured_edges ?? "—"}</td></tr>
+        <tr><td>Segments with any sensor data</td><td>${fmt(a.any_sensor_coverage_percent)}%</td></tr>
+        <tr><td>Mean measured PM2.5</td><td>${a.mean_measured_PM2_5 == null ? "—" : fmt(a.mean_measured_PM2_5) + " µg/m³"}</td></tr>
+      </tbody></table>
+      <hr>
+      <h3>Fastest route</h3>
+      <table class="cmp"><tbody>
+        <tr><td>Distance</td><td>${fmt(f.distance_km)} km</td></tr>
+        <tr><td>Estimated travel time</td><td>${fmt(f.estimated_time_min)} min</td></tr>
+      </tbody></table>
+      <p class="formula">Times use OSM road-speed values or estimates, not live traffic. Sensor coverage is incomplete. Safety and smoothness are currently neutral factors, not measured road-condition scores. The backend does not yet expose the internal Dijkstra settled-node trace.</p>`;
+  }
+
+  async function calculateRoute() {
+    const button = $("#run");
+    button.disabled = true;
+    button.textContent = "Calculating…";
+    try {
+      const [efficiency, air_quality, safety, smoothness] = currentWeights();
+      const payload = {
+        start_lat: SVNIT.lat, start_lon: SVNIT.lon,
+        end_lat: STATION.lat, end_lon: STATION.lon,
+        efficiency, air_quality, safety, smoothness
+      };
+      const response = await fetch(`${API}/api/route`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`Route endpoint returned HTTP ${response.status}: ${await response.text()}`);
+      const data = await response.json();
+      latestRoute = data;
+      drawRoutes(data);
+      renderStats(data);
+    } catch (error) {
+      console.error(error);
+      alert(`Route calculation failed: ${error.message}\n\nCheck that uvicorn is running and that /api/route works in Swagger.`);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Run Dijkstra";
+    }
+  }
+
+  // Remove old simulation event handlers by replacing the controls.
+  function replaceButton(id, label, handler) {
+    const old = document.getElementById(id);
+    const fresh = old.cloneNode(true);
+    if (label) fresh.textContent = label;
+    old.replaceWith(fresh);
+    fresh.addEventListener("click", handler);
+    return fresh;
+  }
+
+  replaceButton("run", "Run Dijkstra", calculateRoute);
+  replaceButton("randomize", "Reload road data", loadRoads);
+  replaceButton("reset", "Reset weights", () => {
+    const defaults = { eff:40, air:30, safe:20, mech:10 };
+    for (const [key, value] of Object.entries(defaults)) {
+      const slider = document.getElementById(`w-${key}`);
+      if (slider) {
+        slider.value = value;
+        slider.dispatchEvent(new Event("input", { bubbles:true }));
+      }
+    }
+    clearRouteLayers();
+    latestRoute = null;
+    $("#results").innerHTML = '<h2>Result</h2><p class="empty">Weights reset. Run Dijkstra to calculate a new route.</p>';
+  });
+  const oldFast = $("#showFast");
+  const newFast = oldFast.cloneNode(true);
+  oldFast.replaceWith(newFast);
+  newFast.addEventListener("change", () => { if (latestRoute) drawRoutes(latestRoute); });
+
+  map = L.map("map").setView([21.184, 72.812], 13);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom:19, attribution:"&copy; OpenStreetMap contributors"
+  }).addTo(map);
+  startMarker = L.marker([SVNIT.lat, SVNIT.lon]).addTo(map).bindPopup("<b>Start</b><br>SVNIT, Surat");
+  endMarker = L.marker([STATION.lat, STATION.lon]).addTo(map).bindPopup("<b>Destination</b><br>Surat Railway Station");
+  loadRoads();
+  setTimeout(() => map.invalidateSize(), 250);
+})();
+</script>
+
+</body>
+</html>
