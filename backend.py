@@ -18,6 +18,21 @@ from pydantic import BaseModel, Field
 # --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
+SAFETY_ZONES_FILE = BASE_DIR / "surat_safety_zones.geojson"
+
+if SAFETY_ZONES_FILE.exists():
+    with open(SAFETY_ZONES_FILE, "r", encoding="utf-8") as f:
+        SAFETY_ZONES_GEOJSON = json.load(f)
+else:
+    SAFETY_ZONES_GEOJSON = {"type": "FeatureCollection", "features": []}
+
+SAFETY_ZONE_FEATURES = SAFETY_ZONES_GEOJSON.get("features", [])
+SAFETY_ZONE_BY_ID = {
+    feature.get("properties", {}).get("id"): feature.get("properties", {})
+    for feature in SAFETY_ZONE_FEATURES
+    if feature.get("properties", {}).get("id")
+}
+SAFETY_ZONE_DATA_AVAILABLE = bool(SAFETY_ZONE_FEATURES)
 
 app = FastAPI(title="Surat Pollution-Aware Routing API")
 
@@ -126,6 +141,51 @@ def edge_travel_time_seconds(edge):
     return edge["length_m"] / (edge_speed(edge) * 1000 / 3600)
 
 
+def point_to_segment_distance_m(point_lat, point_lon, start, end):
+    reference_lat = math.radians((start["lat"] + end["lat"]) / 2)
+    scale_x = 111320 * math.cos(reference_lat)
+    scale_y = 110540
+
+    px, py = point_lon * scale_x, point_lat * scale_y
+    ax, ay = start["lon"] * scale_x, start["lat"] * scale_y
+    bx, by = end["lon"] * scale_x, end["lat"] * scale_y
+    dx, dy = bx - ax, by - ay
+    segment_length_squared = dx * dx + dy * dy
+
+    if segment_length_squared == 0:
+        return math.hypot(px - ax, py - ay)
+
+    projection = max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / segment_length_squared))
+    nearest_x, nearest_y = ax + projection * dx, ay + projection * dy
+    return math.hypot(px - nearest_x, py - nearest_y)
+
+
+def safety_zones_near_edge(u, v):
+    start = G.nodes[u]
+    end = G.nodes[v]
+    nearby = []
+
+    for feature in SAFETY_ZONE_FEATURES:
+        geometry = feature.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
+        if geometry.get("type") != "Point" or len(coordinates) < 2:
+            continue
+
+        lon, lat = coordinates[:2]
+        if point_to_segment_distance_m(lat, lon, start, end) <= 100:
+            zone_id = feature.get("properties", {}).get("id")
+            if zone_id:
+                nearby.append(zone_id)
+
+    return nearby
+
+
+if SAFETY_ZONE_DATA_AVAILABLE:
+    for u, v, _, edge in G.edges(keys=True, data=True):
+        edge["safety_zone_ids"] = safety_zones_near_edge(u, v)
+        edge["safety_exposure_factor"] = min(len(edge["safety_zone_ids"]), 1)
+
+
 # --------------------------------------------------
 # ROUTE COST CALCULATION
 # --------------------------------------------------
@@ -147,7 +207,7 @@ def calculate_edge_cost(edge, weights):
 
     # These remain neutral until real road-condition
     # and safety observations are available
-    safety_factor = 0.5
+    safety_factor = edge.get("safety_exposure_factor", 0.5)
     smoothness_factor = 0.5
 
     score = (
@@ -328,6 +388,32 @@ def build_route_result(path, selected_edges):
         and edge.get("PM2_5") is not None
     ]
 
+    measured_time_seconds = sum(
+        edge_travel_time_seconds(edge)
+        for edge in selected_edges
+        if edge.get("measurement_status") == "measured"
+        and edge.get("PM2_5") is not None
+    )
+    time_weighted_pollution = sum(
+        float(edge["PM2_5"]) * edge_travel_time_seconds(edge)
+        for edge in selected_edges
+        if edge.get("measurement_status") == "measured"
+        and edge.get("PM2_5") is not None
+    )
+    total_time_seconds = sum(edge_travel_time_seconds(edge) for edge in selected_edges)
+    safety_zone_ids = {
+        zone_id
+        for edge in selected_edges
+        for zone_id in edge.get("safety_zone_ids", [])
+    }
+    safety_zone_counts = {
+        category: sum(
+            SAFETY_ZONE_BY_ID.get(zone_id, {}).get("category") == category
+            for zone_id in safety_zone_ids
+        )
+        for category in ("education", "healthcare")
+    }
+
     coordinates = [
         {
             "lat": G.nodes[node]["lat"],
@@ -363,6 +449,15 @@ def build_route_result(path, selected_edges):
             "mean_measured_PM2_5": round(
                 sum(pollution_values) / len(pollution_values), 2
             ) if pollution_values else None
+            ,"time_weighted_mean_PM2_5": round(
+                time_weighted_pollution / measured_time_seconds, 2
+            ) if measured_time_seconds else None,
+            "measured_time_coverage_percent": round(
+                measured_time_seconds / total_time_seconds * 100, 2
+            ) if total_time_seconds else 0,
+            "safety_zone_count": len(safety_zone_ids),
+            "education_zone_count": safety_zone_counts["education"],
+            "healthcare_zone_count": safety_zone_counts["healthcare"]
         }
     }
 
@@ -456,6 +551,7 @@ def find_route(request: RouteRequest):
         "fastest_statistics": fastest_result["statistics"],
 
         "weights_used": weights,
+        "safety_zone_data_available": SAFETY_ZONE_DATA_AVAILABLE,
 
         # Actual execution details from the optimized Dijkstra run
         "trace": dijkstra_trace,
@@ -469,7 +565,11 @@ def find_route(request: RouteRequest):
             "fastest_route": "Minimizes estimated travel time using road speed data.",
             "optimized_route": "Uses the selected efficiency, air-quality, safety and smoothness weights.",
             "speed_data": "Travel times use estimated road speeds where actual speed limits are unavailable.",
-            "safety_smoothness": "Currently neutral because verified road-condition and safety measurements are not available."
+            "safety_smoothness": (
+                "Safety cost uses OSM school and healthcare features within 100 m of road segments; smoothness remains neutral."
+                if SAFETY_ZONE_DATA_AVAILABLE
+                else "Safety and smoothness remain neutral until local OSM school and healthcare features are extracted."
+            )
         }
     }
 
@@ -481,6 +581,11 @@ def find_route(request: RouteRequest):
 @app.get("/api/roads")
 def get_roads():
     return JSONResponse(content=ROADS_GEOJSON)
+
+
+@app.get("/api/safety-zones")
+def get_safety_zones():
+    return JSONResponse(content=SAFETY_ZONES_GEOJSON)
 
 
 # --------------------------------------------------

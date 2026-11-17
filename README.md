@@ -68,7 +68,18 @@ cd surat-pollution-aware-route-optimizer
 pip install fastapi uvicorn networkx pandas
 ```
 
-### 3. Start the Backend
+### 3. Build Safety-Zone Data
+
+The live credit system uses school and healthcare features from the included OpenStreetMap GeoPackage. Generate the local zone layer once:
+
+```bash
+pip install geopandas
+python build_safety_zones.py
+```
+
+This creates `surat_safety_zones.geojson`. The backend uses zones within 100 meters of route segments for safety scoring and credit comparisons. If the file is absent, the API keeps safety neutral and credits remain unavailable.
+
+### 4. Start the Backend
 
 ```bash
 uvicorn backend:app --reload
@@ -82,7 +93,7 @@ API documentation:
 
 `http://127.0.0.1:8000/docs`
 
-### 4. Start the Frontend
+### 5. Start the Frontend
 
 Open another terminal in the project directory and run:
 

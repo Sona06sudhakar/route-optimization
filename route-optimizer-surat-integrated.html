@@ -144,6 +144,9 @@ table.cmp td.worse{color:var(--bad)}
 .credits{display:flex; gap:12px; align-items:center; border-top:1px solid var(--line); padding-top:12px; margin-top:4px}
 .credits .num{font-family:"Instrument Serif",Georgia,serif; font-size:40px; line-height:1; min-width:56px}
 .credits p{margin:0; font-size:13px; color:var(--muted)}
+.credit-options{display:grid; gap:8px; margin-top:8px}
+.credit-option{display:grid; grid-template-columns:1fr auto; gap:6px 12px; align-items:center; padding-top:8px; border-top:1px solid var(--line)}
+.credit-option p{grid-column:1 / -1}
 details{margin-top:12px; font-size:13px}
 summary{cursor:pointer; font-weight:600}
 table.trace{width:100%; border-collapse:collapse; margin-top:8px; font-size:12.5px}
@@ -231,6 +234,10 @@ table.trace th{color:var(--muted); font-weight:600}
         <div class="group"><b>Routes</b>
           <span><i class="sw" style="background:#d45b45"></i>Pollution-aware</span>
           <span><i class="sw" style="background:#397bb5"></i>Fastest</span>
+        </div>
+        <div class="group"><b>Safety zones</b>
+          <span><i class="sw" style="background:#c94d48"></i>Education</span>
+          <span><i class="sw" style="background:#397bb5"></i>Healthcare</span>
         </div>
       </div>
       <p class="hint" style="padding:0 16px 12px;margin:0">Sensor readings cover only the GPS-tracked journey, not every road in Surat. Pollution colours show a relative score, not official CPCB AQI.</p>
@@ -668,9 +675,67 @@ renderWeights(); buildMap();
   const SVNIT = { lat: 21.1654602, lon: 72.7854551 };
   const STATION = { lat: 21.205538, lon: 72.840954 };
 
-  let map, roadsLayer, optimizedLayer, fastestLayer, startMarker, endMarker;
+  let map, roadsLayer, safetyZonesLayer, optimizedLayer, fastestLayer, startMarker, endMarker;
   let latestRoute = null;
   const $ = (selector) => document.querySelector(selector);
+  const CREDIT_BALANCE_KEY = "surat-route-credit-balance";
+  const CREDIT_CLAIMS_KEY = "surat-route-credit-claims";
+  const BASE_ROUTE_CREDITS = 10;
+
+  function creditBalance() {
+    const balance = Number(localStorage.getItem(CREDIT_BALANCE_KEY) || 0);
+    return Number.isFinite(balance) && balance >= 0 ? balance : 0;
+  }
+
+  function creditClaimKey(route) {
+    const routeSignature = (route || []).map(point => `${point.lat.toFixed(5)},${point.lon.toFixed(5)}`).join(";");
+    let hash = 2166136261;
+    for (let index = 0; index < routeSignature.length; index++) {
+      hash ^= routeSignature.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${new Date().toISOString().slice(0, 10)}:${(hash >>> 0).toString(16)}`;
+  }
+
+  function creditAssessment(data) {
+    const optimized = data.statistics || {};
+    const fastest = data.fastest_statistics || {};
+    const optimizedPm = Number(optimized.time_weighted_mean_PM2_5);
+    const fastestPm = Number(fastest.time_weighted_mean_PM2_5);
+    const hasAirData = Number.isFinite(optimizedPm)
+      && Number.isFinite(fastestPm)
+      && Number(optimized.measured_time_coverage_percent) > 0
+      && Number(fastest.measured_time_coverage_percent) > 0;
+    const airGain = hasAirData && fastestPm > 0
+      ? Math.max(0, (fastestPm - optimizedPm) / fastestPm)
+      : 0;
+    const fastestZones = Number(fastest.safety_zone_count) || 0;
+    const optimizedZones = Number(optimized.safety_zone_count) || 0;
+    const hasZoneData = data.safety_zone_data_available
+      && Number.isFinite(Number(fastest.safety_zone_count))
+      && Number.isFinite(Number(optimized.safety_zone_count));
+    const zoneGain = hasZoneData && fastestZones > 0
+      ? Math.max(0, (fastestZones - optimizedZones) / fastestZones)
+      : 0;
+    return {
+      fastestCredits: BASE_ROUTE_CREDITS,
+      optimizedCredits: BASE_ROUTE_CREDITS + Math.round(50 * airGain + 50 * zoneGain),
+      airGain,
+      zoneGain,
+      hasAirData,
+      hasZoneData
+    };
+  }
+
+  function claimCredits(route, amount) {
+    const claims = JSON.parse(localStorage.getItem(CREDIT_CLAIMS_KEY) || "[]");
+    const key = creditClaimKey(route);
+    if (claims.includes(key)) return false;
+    claims.push(key);
+    localStorage.setItem(CREDIT_CLAIMS_KEY, JSON.stringify(claims));
+    localStorage.setItem(CREDIT_BALANCE_KEY, String(creditBalance() + amount));
+    return true;
+  }
 
   // Replace the demo SVG with a real Leaflet map container.
   const oldMap = document.getElementById("map");
@@ -690,7 +755,7 @@ renderWeights(); buildMap();
   // Make clear which controls currently use measured data and which are placeholders.
   const weightHint = $("#weights").parentElement.querySelector(".hint");
   if (weightHint) {
-    weightHint.textContent = "Weights are normalized to 100%. Efficiency uses road-speed estimates; air quality uses matched PM2.5 data. Safety and smoothness are neutral placeholders until reliable road-condition data is available.";
+    weightHint.textContent = "Weights are normalized to 100%. Efficiency uses road-speed estimates; air quality uses matched PM2.5 data; safety uses nearby OSM school and healthcare features. Smoothness remains a neutral placeholder.";
   }
 
   function roadColor(p) {
@@ -749,6 +814,34 @@ renderWeights(); buildMap();
     }
   }
 
+  async function loadSafetyZones() {
+    try {
+      const response = await fetch(`${API}/api/safety-zones`);
+      if (!response.ok) throw new Error(`Safety-zone endpoint returned HTTP ${response.status}`);
+      const geojson = await response.json();
+      if (safetyZonesLayer) map.removeLayer(safetyZonesLayer);
+      safetyZonesLayer = L.geoJSON(geojson, {
+        pointToLayer: (feature, latlng) => {
+          const color = feature.properties?.category === "education" ? "#c94d48" : "#397bb5";
+          return L.circleMarker(latlng, {
+            radius: 6, color, weight: 1.5, fillColor: color, fillOpacity: 0.85
+          });
+        },
+        onEachFeature: (feature, layer) => {
+          const popup = document.createElement("div");
+          const name = document.createElement("strong");
+          name.textContent = feature.properties?.name || "Unnamed OSM feature";
+          const category = document.createElement("div");
+          category.textContent = feature.properties?.category || "Safety zone";
+          popup.append(name, category);
+          layer.bindPopup(popup);
+        }
+      }).addTo(map);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   function currentWeights() {
     const keys = ["eff", "air", "safe", "mech"];
     const values = keys.map(key => Number(document.getElementById(`w-${key}`)?.value ?? 0));
@@ -789,10 +882,17 @@ renderWeights(); buildMap();
     const a = data.statistics || {};
     const f = data.fastest_statistics || {};
     const fmt = (v, d=2) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "—";
+    const assessment = creditAssessment(data);
+    const claims = JSON.parse(localStorage.getItem(CREDIT_CLAIMS_KEY) || "[]");
+    const fastestClaimed = claims.includes(creditClaimKey(data.fastest_route));
+    const optimizedClaimed = claims.includes(creditClaimKey(data.route));
+    const claimButton = (routeName, route, amount, alreadyClaimed) => alreadyClaimed
+      ? "Claimed today"
+      : `<button class="btn" data-credit-route="${routeName}">Claim +${amount}</button>`;
     $("#results").innerHTML = `
       <h2>Route comparison</h2>
       <p class="hint">Calculated on the real Surat road graph.</p>
-      <h3>Pollution-aware optimized route</h3>
+      <h3>Cleaner / safety-aware route</h3>
       <table class="cmp"><tbody>
         <tr><td>Distance</td><td>${fmt(a.distance_km)} km</td></tr>
         <tr><td>Estimated travel time</td><td>${fmt(a.estimated_time_min)} min</td></tr>
@@ -801,15 +901,39 @@ renderWeights(); buildMap();
         <tr><td>Limited-coverage segments</td><td>${a.limited_edges ?? "—"}</td></tr>
         <tr><td>Unmeasured segments</td><td>${a.unmeasured_edges ?? "—"}</td></tr>
         <tr><td>Segments with any sensor data</td><td>${fmt(a.any_sensor_coverage_percent)}%</td></tr>
-        <tr><td>Mean measured PM2.5</td><td>${a.mean_measured_PM2_5 == null ? "—" : fmt(a.mean_measured_PM2_5) + " µg/m³"}</td></tr>
+        <tr><td>Time-weighted measured PM2.5</td><td>${a.time_weighted_mean_PM2_5 == null ? "—" : fmt(a.time_weighted_mean_PM2_5) + " µg/m³"}</td></tr>
+        <tr><td>Education / healthcare zones nearby</td><td>${a.education_zone_count ?? 0} / ${a.healthcare_zone_count ?? 0}</td></tr>
+        <tr><td>Credits for completing this route</td><td>${assessment.optimizedCredits}</td></tr>
       </tbody></table>
+      ${claimButton("optimized", data.route, assessment.optimizedCredits, optimizedClaimed)}
       <hr>
       <h3>Fastest route</h3>
       <table class="cmp"><tbody>
         <tr><td>Distance</td><td>${fmt(f.distance_km)} km</td></tr>
         <tr><td>Estimated travel time</td><td>${fmt(f.estimated_time_min)} min</td></tr>
+        <tr><td>Time-weighted measured PM2.5</td><td>${f.time_weighted_mean_PM2_5 == null ? "—" : fmt(f.time_weighted_mean_PM2_5) + " µg/m³"}</td></tr>
+        <tr><td>Education / healthcare zones nearby</td><td>${f.education_zone_count ?? 0} / ${f.healthcare_zone_count ?? 0}</td></tr>
+        <tr><td>Credits for completing this route</td><td>${assessment.fastestCredits}</td></tr>
       </tbody></table>
-      <p class="formula">Times use OSM road-speed values or estimates, not live traffic. Sensor coverage is incomplete. Safety and smoothness are currently neutral factors, not measured road-condition scores. The backend does not yet expose the internal Dijkstra settled-node trace.</p>`;
+      ${claimButton("fastest", data.fastest_route, assessment.fastestCredits, fastestClaimed)}
+      <div class="credits">
+        <div class="num">${creditBalance()}</div>
+        <div><strong>Clean-air route credits</strong>
+          <p>Fastest route earns ${assessment.fastestCredits} base credits. The cleaner / safety-aware route earns ${assessment.optimizedCredits}: air quality and fewer school/healthcare zones each contribute half of its improvement bonus.</p>
+        </div>
+      </div>
+      <p class="formula">Credits are stored in this browser. Confirmation is not GPS-verified. Pollution and OSM safety-zone coverage may be incomplete; unavailable factors add no bonus. There is no minimum detour requirement.</p>
+      <p class="formula">Times use OSM road-speed values or estimates, not live traffic. Smoothness remains a neutral placeholder.</p>`;
+
+    document.querySelectorAll("[data-credit-route]").forEach(button => {
+      button.addEventListener("click", () => {
+        const fastestRoute = button.dataset.creditRoute === "fastest";
+        const route = fastestRoute ? data.fastest_route : data.route;
+        const amount = fastestRoute ? assessment.fastestCredits : assessment.optimizedCredits;
+        if (!window.confirm("Confirm that you completed this route? This demo cannot verify trips by GPS.")) return;
+        if (claimCredits(route, amount)) renderStats(data);
+      });
+    });
   }
 
   async function calculateRoute() {
@@ -878,6 +1002,7 @@ renderWeights(); buildMap();
   startMarker = L.marker([SVNIT.lat, SVNIT.lon]).addTo(map).bindPopup("<b>Start</b><br>SVNIT, Surat");
   endMarker = L.marker([STATION.lat, STATION.lon]).addTo(map).bindPopup("<b>Destination</b><br>Surat Railway Station");
   loadRoads();
+  loadSafetyZones();
   setTimeout(() => map.invalidateSize(), 250);
 })();
 </script>
